@@ -1,3 +1,5 @@
+import './globals.css';
+
 export const metadata = {
   title: 'LEFT / RIGHT — Vote',
   description: 'Binary voting — verified with Discord'
