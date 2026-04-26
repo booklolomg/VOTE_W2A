@@ -1,16 +1,25 @@
 import { NextResponse } from 'next/server';
-import { kv } from '@vercel/kv';
+import { kv } from '@/lib/kv';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const [left, right] = await Promise.all([
-    kv.get('count:left'),
-    kv.get('count:right')
-  ]);
+  try {
+    const [left, right] = await Promise.all([
+      kv.get('count:left'),
+      kv.get('count:right')
+    ]);
 
-  return NextResponse.json({
-    counts: {
-      left: Number(left) || 0,
-      right: Number(right) || 0
-    }
-  });
+    return NextResponse.json({
+      counts: {
+        left: Number(left) || 0,
+        right: Number(right) || 0
+      }
+    });
+  } catch (e) {
+    console.error('KV error:', e);
+    return NextResponse.json({
+      counts: { left: 0, right: 0 }
+    });
+  }
 }

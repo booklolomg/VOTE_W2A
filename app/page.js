@@ -1,4 +1,4 @@
-import { kv } from '@vercel/kv';
+import { kv } from '@/lib/kv';
 import { cookies } from 'next/headers';
 import { verifySessionCookie } from '@/lib/session';
 import { POLL_CONFIG } from '@/lib/config';
@@ -37,6 +37,13 @@ export default async function Home() {
     }
   } catch (e) {
     console.error('KV error:', e);
+    if (session) {
+      initial.user = {
+        id: session.id,
+        username: session.username,
+        avatar: session.avatar
+      };
+    }
   }
 
   return <VoteApp config={POLL_CONFIG} initial={initial} />;

@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
-import { kv } from '@vercel/kv';
+import { kv } from '@/lib/kv';
 import { getSessionFromRequest } from '@/lib/session';
+
+export const dynamic = 'force-dynamic';
 
 export async function POST(request) {
   const session = getSessionFromRequest(request);
@@ -16,16 +18,12 @@ export async function POST(request) {
   const userKey = `vote:${session.id}`;
   const previousVote = await kv.get(userKey);
 
-  // if changing vote, decrement previous count
   if (previousVote && previousVote !== side) {
     await kv.decr(`count:${previousVote}`);
   }
-
-  // only increment if it's a new vote (not re-submitting same side)
   if (previousVote !== side) {
     await kv.incr(`count:${side}`);
   }
-
   await kv.set(userKey, side);
 
   const [left, right] = await Promise.all([
@@ -43,7 +41,6 @@ export async function POST(request) {
   });
 }
 
-// allow user to reset (remove) their vote
 export async function DELETE(request) {
   const session = getSessionFromRequest(request);
   if (!session) {

@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
-import { kv } from '@vercel/kv';
+import { kv } from '@/lib/kv';
 import { getSessionFromRequest } from '@/lib/session';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET(request) {
   const session = getSessionFromRequest(request);
@@ -8,7 +10,12 @@ export async function GET(request) {
     return NextResponse.json({ user: null });
   }
 
-  const myVote = await kv.get(`vote:${session.id}`);
+  let myVote = null;
+  try {
+    myVote = await kv.get(`vote:${session.id}`);
+  } catch (e) {
+    console.error('KV error:', e);
+  }
 
   return NextResponse.json({
     user: {
