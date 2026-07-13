@@ -11,42 +11,33 @@ export async function POST(request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  const { assignments } = await request.json();
-
-  // validate: every tank must be assigned a valid tier
-  const tankIds = TIER_CONFIG.tanks.map(t => t.id);
-  const tierIds = TIER_CONFIG.tiers.map(t => t.id);
-
-  if (!assignments || typeof assignments !== 'object') {
-    return NextResponse.json({ error: 'invalid assignments' }, { status: 400 });
+  const { tierId } = await request.json();
+  const validTier = TIER_CONFIG.tiers.some(t => t.id === tierId);
+  if (!validTier) {
+    return NextResponse.json({ error: 'invalid tier' }, { status: 400 });
   }
 
-  for (const tankId of tankIds) {
-    if (!tierIds.includes(assignments[tankId])) {
-      return NextResponse.json(
-        { error: `tank "${tankId}" not assigned to a valid tier` },
-        { status: 400 }
-      );
-    }
-  }
-
-  // vote once: reject if already voted
+  // vote once
   const userKey = `tiervote:${session.id}`;
   const existing = await kv.get(userKey);
   if (existing) {
     return NextResponse.json(
-      { error: 'already voted', alreadyVoted: true },
+      { error: 'already voted', alreadyVoted: true, myVote: existing },
       { status: 409 }
     );
   }
 
-  // save user's vote + increment counts
-  await kv.set(userKey, JSON.stringify(assignments));
+  await kv.set(userKey, tierId);
+  await kv.incr(`tiercount:${tierId}`);
+
+  // return fresh counts
+  const counts = {};
   await Promise.all(
-    tankIds.map(tankId =>
-      kv.incr(`tiercount:${tankId}:${assignments[tankId]}`)
-    )
+    TIER_CONFIG.tiers.map(async (t) => {
+      const c = await kv.get(`tiercount:${t.id}`);
+      counts[t.id] = Number(c) || 0;
+    })
   );
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, myVote: tierId, counts });
 }

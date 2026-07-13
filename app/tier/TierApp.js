@@ -6,53 +6,41 @@ export default function TierApp({ config, initial }) {
   const [user] = useState(initial.user);
   const [myVote, setMyVote] = useState(initial.myVote);
   const [counts, setCounts] = useState(initial.counts);
-  const [assignments, setAssignments] = useState({});
-  const [confirming, setConfirming] = useState(false);
+  const [pendingChoice, setPendingChoice] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
-  const totalTanks = config.tanks.length;
-  const assignedCount = Object.keys(assignments).length;
-  const allAssigned = assignedCount === totalTanks;
-
-  // poll results every 8s after voting
+  // realtime: poll ทุก 3 วินาที (ทั้งก่อนและหลังโหวต)
   useEffect(() => {
-    if (!myVote) return;
     const id = setInterval(async () => {
       try {
         const r = await fetch('/api/tier/results');
         const data = await r.json();
         if (data.counts) setCounts(data.counts);
       } catch {}
-    }, 8000);
+    }, 3000);
     return () => clearInterval(id);
-  }, [myVote]);
+  }, []);
 
-  function assign(tankId, tierId) {
-    setAssignments(prev => ({ ...prev, [tankId]: tierId }));
-  }
-
-  async function handleSubmit() {
-    if (!allAssigned || submitting) return;
+  async function handleConfirm() {
+    if (!pendingChoice || submitting) return;
     setSubmitting(true);
     setError(null);
     try {
       const r = await fetch('/api/tier/vote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assignments })
+        body: JSON.stringify({ tierId: pendingChoice })
       });
       const data = await r.json();
       if (data.ok) {
-        setMyVote(assignments);
-        setConfirming(false);
-        // refresh counts
-        const rr = await fetch('/api/tier/results');
-        const dd = await rr.json();
-        if (dd.counts) setCounts(dd.counts);
+        setMyVote(data.myVote);
+        setCounts(data.counts);
+        setPendingChoice(null);
       } else if (data.alreadyVoted) {
+        setMyVote(data.myVote);
+        setPendingChoice(null);
         setError('คุณโหวตไปแล้ว — โหวตได้ครั้งเดียว');
-        setConfirming(false);
       } else {
         setError(data.error || 'เกิดข้อผิดพลาด');
       }
@@ -63,33 +51,27 @@ export default function TierApp({ config, initial }) {
     }
   }
 
-  function getTier(tierId) {
-    return config.tiers.find(t => t.id === tierId);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') setPendingChoice(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // ===== คำนวณค่าเฉลี่ย =====
+  const total = config.tiers.reduce((s, t) => s + (counts[t.id] || 0), 0);
+  const avgScore = total
+    ? config.tiers.reduce((s, t) => s + t.score * (counts[t.id] || 0), 0) / total
+    : 0;
+
+  // tier ที่ใกล้ค่าเฉลี่ยที่สุด
+  let avgTier = null;
+  if (total > 0) {
+    avgTier = config.tiers.reduce((best, t) =>
+      Math.abs(t.score - avgScore) < Math.abs(best.score - avgScore) ? t : best
+    );
   }
 
-  // compute mode: which tier each tank belongs to based on most votes
-  function computeBoard() {
-    const board = {};
-    config.tiers.forEach(t => { board[t.id] = []; });
-
-    config.tanks.forEach(tank => {
-      const tankCounts = counts[tank.id] || {};
-      let bestTier = null;
-      let bestCount = 0;
-      // iterate tiers in order — ties go to the better (earlier) tier
-      config.tiers.forEach(tier => {
-        const c = tankCounts[tier.id] || 0;
-        if (c > bestCount) {
-          bestCount = c;
-          bestTier = tier.id;
-        }
-      });
-      if (bestTier) {
-        board[bestTier].push({ ...tank, votes: bestCount });
-      }
-    });
-    return board;
-  }
+  const maxCount = Math.max(1, ...config.tiers.map(t => counts[t.id] || 0));
 
   // ===== NOT LOGGED IN =====
   if (!user) {
@@ -101,9 +83,9 @@ export default function TierApp({ config, initial }) {
           <div className="corner bl"></div>
           <div className="corner br"></div>
           <div className="login-label">— SIGN IN REQUIRED —</div>
-          <h1 className="login-title">{config.title}</h1>
+          <h1 className="login-title">{config.question}</h1>
           <p className="login-text">
-            ต้องยืนยันตัวด้วย Discord ก่อนจัดอันดับ<br />
+            ต้องยืนยันตัวด้วย Discord ก่อนโหวต<br />
             <span className="muted">หลัง login เสร็จ กลับมาที่หน้านี้อีกครั้ง (/tier)</span>
           </p>
           <a href="/api/auth/login" className="discord-btn">
@@ -114,64 +96,12 @@ export default function TierApp({ config, initial }) {
     );
   }
 
-  // ===== VOTED: RESULTS BOARD =====
-  if (myVote) {
-    const board = computeBoard();
-    return (
-      <div className="tier-container">
-        <header className="main-header">
-          <div className="logo">TIER<span>/</span>LIST <span>—</span> RESULTS</div>
-          <div className="user-info">
-            <div className="dot"></div>
-            <span className="username">{user.username}</span>
-          </div>
-        </header>
+  const votedTier = myVote ? config.tiers.find(t => t.id === myVote) : null;
 
-        <section className="question-section">
-          <div className="question-label">— COMMUNITY RESULTS —</div>
-          <h1 className="question">{config.question}</h1>
-          <div className="vs-text">MOST VOTED TIER</div>
-        </section>
-
-        <main className="tier-main">
-          {config.tiers.map(tier => (
-            <div className="tier-row" key={tier.id}>
-              <div className="tier-label" style={{ background: tier.color }}>
-                {tier.name}
-              </div>
-              <div className="tier-items">
-                {board[tier.id].length === 0 && (
-                  <span style={{ color: 'var(--muted)', fontSize: '0.8rem', fontFamily: 'JetBrains Mono, monospace' }}>—</span>
-                )}
-                {board[tier.id].map(tank => (
-                  <div className="tier-chip" key={tank.id}>
-                    {tank.imageUrl ? (
-                      <div
-                        className="tier-chip-img"
-                        style={{ backgroundImage: `url('${tank.imageUrl}')` }}
-                      ></div>
-                    ) : null}
-                    <span className="tier-chip-name">{tank.name}</span>
-                    <span className="tier-chip-count">{tank.votes} vote{tank.votes > 1 ? 's' : ''}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-
-          <div className="tier-footer-note">
-            YOU HAVE VOTED · RESULTS UPDATE LIVE
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  // ===== ASSIGN MODE =====
   return (
     <div className="tier-container">
       <header className="main-header">
-        <div className="logo">TIER<span>/</span>LIST <span>—</span> v1.0</div>
+        <div className="logo">TIER<span>/</span>VOTE <span>—</span> LIVE</div>
         <div className="user-info">
           <div className="dot"></div>
           <span className="username">{user.username}</span>
@@ -179,81 +109,77 @@ export default function TierApp({ config, initial }) {
       </header>
 
       <section className="question-section">
-        <div className="question-label">— RANK THEM ALL —</div>
+        <div className="question-label">— THE QUESTION —</div>
         <h1 className="question">{config.question}</h1>
-        <div className="vs-text">ASSIGN EVERY TANK</div>
+        {config.imageUrl ? (
+          <div
+            className="tier-subject-img"
+            style={{ backgroundImage: `url('${config.imageUrl}')` }}
+          ></div>
+        ) : null}
+        <div className="vs-text">{myVote ? 'LIVE RESULTS' : 'PICK ONE TIER'}</div>
       </section>
 
       <main className="tier-main">
-        <div className="tier-progress">
-          จัดแล้ว <strong>{assignedCount}</strong> / {totalTanks} คัน
+        {/* ===== ค่าเฉลี่ย ===== */}
+        {total > 0 && (
+          <div className="tier-average">
+            <div className="tier-average-label">— AVERAGE —</div>
+            <div
+              className="tier-average-value"
+              style={{ background: avgTier?.color || 'transparent' }}
+            >
+              {avgTier?.name || '—'}
+            </div>
+            <div className="tier-average-score">
+              คะแนนเฉลี่ย {avgScore.toFixed(2)} / 5.00 · {total} โหวต
+            </div>
+          </div>
+        )}
+
+        {/* ===== แถบ tier — กดโหวตได้ / แสดงผล ===== */}
+        <div className="tier-bars">
+          {config.tiers.map(tier => {
+            const c = counts[tier.id] || 0;
+            const pct = total ? Math.round((c / total) * 100) : 0;
+            const isMine = myVote === tier.id;
+            return (
+              <div
+                key={tier.id}
+                className={`tier-bar-row ${!myVote ? 'clickable' : ''} ${isMine ? 'mine' : ''}`}
+                onClick={() => !myVote && setPendingChoice(tier.id)}
+              >
+                <div className="tier-bar-label" style={{ background: tier.color }}>
+                  {tier.name}
+                </div>
+                <div className="tier-bar-track">
+                  <div
+                    className="tier-bar-fill"
+                    style={{
+                      width: total ? `${(c / maxCount) * 100}%` : '0%',
+                      background: tier.color
+                    }}
+                  ></div>
+                  <span className="tier-bar-stat">
+                    {c} โหวต · {pct}%
+                    {isMine ? ' ← คุณ' : ''}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
-        {config.tanks.map(tank => {
-          const selectedTier = assignments[tank.id]
-            ? getTier(assignments[tank.id])
-            : null;
-          return (
-            <div
-              className={`tank-card ${selectedTier ? 'assigned' : ''}`}
-              key={tank.id}
-            >
-              <div className="tank-header">
-                {tank.imageUrl ? (
-                  <div
-                    className="tank-thumb"
-                    style={{ backgroundImage: `url('${tank.imageUrl}')` }}
-                  ></div>
-                ) : null}
-                <div className="tank-name">{tank.name}</div>
-                {selectedTier && (
-                  <div
-                    className="tank-assigned-label"
-                    style={{ background: selectedTier.color }}
-                  >
-                    {selectedTier.name}
-                  </div>
-                )}
-              </div>
-              <div className="tier-buttons">
-                {config.tiers.map(tier => (
-                  <button
-                    key={tier.id}
-                    className={`tier-btn ${assignments[tank.id] === tier.id ? 'selected' : ''}`}
-                    style={
-                      assignments[tank.id] === tier.id
-                        ? { background: tier.color }
-                        : {}
-                    }
-                    onClick={() => assign(tank.id, tier.id)}
-                  >
-                    {tier.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          );
-        })}
+        <div className="tier-footer-note">
+          {myVote
+            ? `YOU VOTED "${votedTier?.name}" · UPDATES EVERY 3S`
+            : 'กดแถบ tier ที่ต้องการเพื่อโหวต · โหวตได้ครั้งเดียว'}
+        </div>
       </main>
-
-      <div className="tier-submit-bar">
-        <span className="tier-progress" style={{ margin: 0 }}>
-          {allAssigned
-            ? '✓ ครบแล้ว พร้อมส่ง'
-            : `เหลืออีก ${totalTanks - assignedCount} คัน`}
-        </span>
-        <button
-          className="tier-submit-btn"
-          disabled={!allAssigned || submitting}
-          onClick={() => setConfirming(true)}
-        >
-          ส่งคำตอบ
-        </button>
-      </div>
 
       {error && (
         <div style={{
-          position: 'fixed', bottom: '5rem', left: '50%', transform: 'translateX(-50%)',
+          position: 'fixed', bottom: '2rem', left: '50%', transform: 'translateX(-50%)',
           background: 'rgba(255, 61, 61, 0.15)', border: '1px solid #ff3d3d',
           color: '#ff3d3d', padding: '0.8rem 1.5rem', zIndex: 300,
           fontFamily: 'Sarabun, sans-serif', fontSize: '0.85rem'
@@ -263,28 +189,34 @@ export default function TierApp({ config, initial }) {
       )}
 
       {/* CONFIRM MODAL */}
-      {confirming && (
-        <div className="modal-overlay" onClick={() => setConfirming(false)}>
+      {pendingChoice && (
+        <div className="modal-overlay" onClick={() => setPendingChoice(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="corner tl"></div>
             <div className="corner tr"></div>
             <div className="corner bl"></div>
             <div className="corner br"></div>
-            <div className="modal-label">— CONFIRM YOUR RANKING —</div>
-            <div className="modal-warning" style={{ marginTop: '1rem' }}>
-              ส่งการจัดอันดับทั้งหมด {totalTanks} คัน?<br />
-              <strong style={{ color: '#ff3d3d' }}>ส่งแล้วแก้ไขไม่ได้</strong> — โหวตได้ครั้งเดียว
+            <div className="modal-label">— CONFIRM YOUR VOTE —</div>
+            <div
+              className="tier-modal-choice"
+              style={{ background: config.tiers.find(t => t.id === pendingChoice)?.color }}
+            >
+              {config.tiers.find(t => t.id === pendingChoice)?.name}
+            </div>
+            <div className="modal-warning">
+              คุณกำลังจะโหวต tier นี้<br />
+              <strong style={{ color: '#ff3d3d' }}>โหวตแล้วแก้ไขไม่ได้</strong> — โหวตได้ครั้งเดียว
             </div>
             <div className="modal-buttons">
-              <button className="btn" onClick={() => setConfirming(false)}>
-                กลับไปแก้
+              <button className="btn" onClick={() => setPendingChoice(null)}>
+                ยกเลิก
               </button>
               <button
                 className="btn btn-confirm"
-                onClick={handleSubmit}
+                onClick={handleConfirm}
                 disabled={submitting}
               >
-                {submitting ? '...' : 'ยืนยันส่ง'}
+                {submitting ? '...' : 'ยืนยัน'}
               </button>
             </div>
           </div>

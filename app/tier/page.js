@@ -8,7 +8,7 @@ import './tier.css';
 export const dynamic = 'force-dynamic';
 
 export const metadata = {
-  title: 'Tier List — Vote'
+  title: 'Tier Vote'
 };
 
 export default async function TierPage() {
@@ -25,24 +25,23 @@ export default async function TierPage() {
     if (session) {
       initial.user = { id: session.id, username: session.username };
       const v = await kv.get(`tiervote:${session.id}`);
-      initial.myVote = v ? JSON.parse(v) : null;
+      initial.myVote = v || null;
     }
 
     const counts = {};
     await Promise.all(
-      TIER_CONFIG.tanks.map(async (tank) => {
-        counts[tank.id] = {};
-        await Promise.all(
-          TIER_CONFIG.tiers.map(async (tier) => {
-            const c = await kv.get(`tiercount:${tank.id}:${tier.id}`);
-            counts[tank.id][tier.id] = Number(c) || 0;
-          })
-        );
+      TIER_CONFIG.tiers.map(async (t) => {
+        const c = await kv.get(`tiercount:${t.id}`);
+        counts[t.id] = Number(c) || 0;
       })
     );
     initial.counts = counts;
   } catch (e) {
     console.error('KV error:', e);
+    TIER_CONFIG.tiers.forEach(t => { initial.counts[t.id] = 0; });
+    if (session) {
+      initial.user = { id: session.id, username: session.username };
+    }
   }
 
   return <TierApp config={TIER_CONFIG} initial={initial} />;
