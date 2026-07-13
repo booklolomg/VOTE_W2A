@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server';
-import { createClient } from 'redis';
+import { kv } from '@/lib/kv';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request) {
-  // check admin key from header or query
   const adminKey = request.headers.get('x-admin-key') ||
                    request.nextUrl.searchParams.get('key');
 
@@ -19,41 +18,25 @@ export async function POST(request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  const REDIS_URL = process.env.REDIS_URL || process.env.KV_URL;
-  if (!REDIS_URL) {
-    return NextResponse.json({ error: 'redis not configured' }, { status: 500 });
-  }
-
-  const client = createClient({ url: REDIS_URL });
-  await client.connect();
-
   try {
-    // delete count keys
-    await client.del('count:left');
-    await client.del('count:right');
+    // left/right vote keys
+    await kv.del('count:left');
+    await kv.del('count:right');
 
-    // delete all individual vote keys
-    let cursor = 0;
-    let deletedVotes = 0;
-    do {
-      const result = await client.scan(cursor, { MATCH: 'vote:*', COUNT: 100 });
-      cursor = result.cursor;
-      const keys = result.keys;
-      if (keys.length > 0) {
-        await client.del(keys);
-        deletedVotes += keys.length;
-      }
-    } while (cursor !== 0);
+    const voteKeys = await kv.scanKeys('vote:*');
+    const tierVoteKeys = await kv.scanKeys('tiervote:*');
+    const tierCountKeys = await kv.scanKeys('tiercount:*');
 
-    await client.disconnect();
+    const allKeys = [...voteKeys, ...tierVoteKeys, ...tierCountKeys];
+    await Promise.all(allKeys.map(k => kv.del(k)));
 
     return NextResponse.json({
       ok: true,
       message: 'reset complete',
-      deletedVotes
+      deletedVotes: voteKeys.length,
+      deletedTierVotes: tierVoteKeys.length
     });
   } catch (e) {
-    await client.disconnect().catch(() => {});
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
