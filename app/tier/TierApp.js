@@ -1,145 +1,295 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { tierOptions } from '../../lib/tierConfig';
+import { useState, useEffect } from 'react';
 
-export default function TierApp(props) {
-  // 1. แก้ไขให้รองรับชื่อ Prop ทุกรูปแบบที่อาจส่งมาจาก page.js (เช่น items หรือ initialItems)
-  const itemsList = props.initialItems || props.items || [];
-  
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [results, setResults] = useState({});
+export default function TierApp({ config, initial }) {
+  const [user] = useState(initial.user);
+  const [myVote, setMyVote] = useState(initial.myVote);
+  const [counts, setCounts] = useState(initial.counts);
+  const [assignments, setAssignments] = useState({});
+  const [confirming, setConfirming] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
 
-  const currentItem = itemsList[currentIndex];
+  const totalTanks = config.tanks.length;
+  const assignedCount = Object.keys(assignments).length;
+  const allAssigned = assignedCount === totalTanks;
 
-  // ฟังก์ชันดึงข้อมูลผลโหวตล่าสุดแบบ Real-time
-  const fetchResults = useCallback(async () => {
-    try {
-      const res = await fetch('/api/tier/results');
-      if (res.ok) {
-        const data = await res.json();
-        setResults(data);
-      }
-    } catch (err) {
-      console.error("Failed to fetch results:", err);
-    }
-  }, []);
-
+  // poll results every 8s after voting
   useEffect(() => {
-    fetchResults();
-    const interval = setInterval(fetchResults, 1500); // อัปเดตทุก 1.5 วินาที
-    return () => clearInterval(interval);
-  }, [fetchResults]);
+    if (!myVote) return;
+    const id = setInterval(async () => {
+      try {
+        const r = await fetch('/api/tier/results');
+        const data = await r.json();
+        if (data.counts) setCounts(data.counts);
+      } catch {}
+    }, 8000);
+    return () => clearInterval(id);
+  }, [myVote]);
 
-  // ฟังก์ชันส่งผลโหวต
-  const handleVote = async (tierId) => {
-    if (!currentItem) return;
+  function assign(tankId, tierId) {
+    setAssignments(prev => ({ ...prev, [tankId]: tierId }));
+  }
 
-    await fetch('/api/tier/vote', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ itemId: currentItem.id, tierId }),
-    });
-    
-    fetchResults();
-
-    if (currentIndex < itemsList.length) {
-      setCurrentIndex(currentIndex + 1);
+  async function handleSubmit() {
+    if (!allAssigned || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const r = await fetch('/api/tier/vote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assignments })
+      });
+      const data = await r.json();
+      if (data.ok) {
+        setMyVote(assignments);
+        setConfirming(false);
+        // refresh counts
+        const rr = await fetch('/api/tier/results');
+        const dd = await rr.json();
+        if (dd.counts) setCounts(dd.counts);
+      } else if (data.alreadyVoted) {
+        setError('คุณโหวตไปแล้ว — โหวตได้ครั้งเดียว');
+        setConfirming(false);
+      } else {
+        setError(data.error || 'เกิดข้อผิดพลาด');
+      }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSubmitting(false);
     }
-  };
+  }
 
-  // ฟังก์ชันคำนวณค่าเฉลี่ย
-  const getAverageScore = (itemId) => {
-    if (!results || !results[itemId]) return "0.00";
-    
-    const itemVotes = results[itemId];
-    let totalScore = 0;
-    let totalVotes = 0;
+  function getTier(tierId) {
+    return config.tiers.find(t => t.id === tierId);
+  }
 
-    tierOptions.forEach(option => {
-      const votes = itemVotes[option.id] || 0;
-      totalScore += votes * option.weight;
-      totalVotes += votes;
+  // compute mode: which tier each tank belongs to based on most votes
+  function computeBoard() {
+    const board = {};
+    config.tiers.forEach(t => { board[t.id] = []; });
+
+    config.tanks.forEach(tank => {
+      const tankCounts = counts[tank.id] || {};
+      let bestTier = null;
+      let bestCount = 0;
+      // iterate tiers in order — ties go to the better (earlier) tier
+      config.tiers.forEach(tier => {
+        const c = tankCounts[tier.id] || 0;
+        if (c > bestCount) {
+          bestCount = c;
+          bestTier = tier.id;
+        }
+      });
+      if (bestTier) {
+        board[bestTier].push({ ...tank, votes: bestCount });
+      }
     });
+    return board;
+  }
 
-    return totalVotes === 0 ? "0.00" : (totalScore / totalVotes).toFixed(2);
-  };
-
-  // 2. หน้าจอแจ้งเตือน (กรณีที่ระบบยังหาตัวแปรรายชื่อรถถังไม่เจอ)
-  if (itemsList.length === 0) {
+  // ===== NOT LOGGED IN =====
+  if (!user) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] text-center p-6 bg-[#121212] border border-red-900/50 rounded-lg max-w-xl mx-auto mt-10">
-        <h2 className="text-red-400 text-xl font-bold mb-3">⚠️ ไม่พบข้อมูลรายชื่อรถถัง (Items List Empty)</h2>
-        <p className="text-gray-400 text-sm leading-relaxed mb-4">
-          เนื่องจากในหน้า <code className="text-yellow-400 bg-gray-900 px-1.5 py-0.5 rounded">app/tier/page.js</code> อาจจะไม่ได้ส่งค่าเข้ามา หรือใช้ชื่อตัวแปรไม่ตรงกัน
-        </p>
-        <div className="text-left bg-black/40 p-3 rounded text-xs text-gray-500 font-mono w-full">
-          <p className="text-emerald-400">// วิธีแก้ใน app/tier/page.js ให้ส่งค่าแบบนี้:</p>
-          <p>&lt;TierApp initialItems={"{yourTankData}"} /&gt;</p>
+      <div className="login-screen">
+        <div className="login-card">
+          <div className="corner tl"></div>
+          <div className="corner tr"></div>
+          <div className="corner bl"></div>
+          <div className="corner br"></div>
+          <div className="login-label">— SIGN IN REQUIRED —</div>
+          <h1 className="login-title">{config.title}</h1>
+          <p className="login-text">
+            ต้องยืนยันตัวด้วย Discord ก่อนจัดอันดับ<br />
+            <span className="muted">หลัง login เสร็จ กลับมาที่หน้านี้อีกครั้ง (/tier)</span>
+          </p>
+          <a href="/api/auth/login" className="discord-btn">
+            เข้าสู่ระบบด้วย Discord
+          </a>
         </div>
       </div>
     );
   }
 
-  // 3. กรณีโหวตครบทุกรายการแล้วจริง ๆ
-  if (currentIndex >= itemsList.length || !currentItem) {
+  // ===== VOTED: RESULTS BOARD =====
+  if (myVote) {
+    const board = computeBoard();
     return (
-      <div className="flex flex-col items-center justify-center min-h-[50vh] text-center text-white">
-        <h2 className="text-3xl font-bold mb-4 tracking-wider">จัดอันดับครบทุกคันแล้ว!</h2>
-        <p className="text-gray-400">ขอบคุณที่ร่วมประเมิน</p>
+      <div className="tier-container">
+        <header className="main-header">
+          <div className="logo">TIER<span>/</span>LIST <span>—</span> RESULTS</div>
+          <div className="user-info">
+            <div className="dot"></div>
+            <span className="username">{user.username}</span>
+          </div>
+        </header>
+
+        <section className="question-section">
+          <div className="question-label">— COMMUNITY RESULTS —</div>
+          <h1 className="question">{config.question}</h1>
+          <div className="vs-text">MOST VOTED TIER</div>
+        </section>
+
+        <main className="tier-main">
+          {config.tiers.map(tier => (
+            <div className="tier-row" key={tier.id}>
+              <div className="tier-label" style={{ background: tier.color }}>
+                {tier.name}
+              </div>
+              <div className="tier-items">
+                {board[tier.id].length === 0 && (
+                  <span style={{ color: 'var(--muted)', fontSize: '0.8rem', fontFamily: 'JetBrains Mono, monospace' }}>—</span>
+                )}
+                {board[tier.id].map(tank => (
+                  <div className="tier-chip" key={tank.id}>
+                    {tank.imageUrl ? (
+                      <div
+                        className="tier-chip-img"
+                        style={{ backgroundImage: `url('${tank.imageUrl}')` }}
+                      ></div>
+                    ) : null}
+                    <span className="tier-chip-name">{tank.name}</span>
+                    <span className="tier-chip-count">{tank.votes} vote{tank.votes > 1 ? 's' : ''}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          <div className="tier-footer-note">
+            YOU HAVE VOTED · RESULTS UPDATE LIVE
+          </div>
+        </main>
       </div>
     );
   }
 
+  // ===== ASSIGN MODE =====
   return (
-    <div className="flex flex-col items-center justify-center p-4 w-full max-w-3xl mx-auto font-sans">
-      
-      <div className="mb-8 text-gray-500 text-sm tracking-widest">
-        จัดแล้ว <span className="text-white font-bold">{currentIndex}</span> / {itemsList.length} คัน
-      </div>
+    <div className="tier-container">
+      <header className="main-header">
+        <div className="logo">TIER<span>/</span>LIST <span>—</span> v1.0</div>
+        <div className="user-info">
+          <div className="dot"></div>
+          <span className="username">{user.username}</span>
+        </div>
+      </header>
 
-      <div className="bg-[#121212] border border-[#2A2A2A] p-6 md:p-10 rounded-lg shadow-2xl w-full text-center">
-        
-        {/* กล่องแสดงรูปภาพ (ไม่แสดงชื่อรถถังตามที่สั่ง) */}
-        <div className="h-48 md:h-64 bg-[#1E1E1E] border border-[#333] rounded mb-8 flex items-center justify-center overflow-hidden relative">
-          {currentItem.image ? (
-            <img 
-              src={currentItem.image} 
-              alt="Tank Preview" 
-              className="w-full h-full object-contain"
-            />
-          ) : (
-            <span className="text-gray-600 text-sm uppercase tracking-widest">ไม่มีรูปภาพรถถัง</span>
-          )}
+      <section className="question-section">
+        <div className="question-label">— RANK THEM ALL —</div>
+        <h1 className="question">{config.question}</h1>
+        <div className="vs-text">ASSIGN EVERY TANK</div>
+      </section>
+
+      <main className="tier-main">
+        <div className="tier-progress">
+          จัดแล้ว <strong>{assignedCount}</strong> / {totalTanks} คัน
         </div>
 
-        {/* คะแนนเฉลี่ย Real-time */}
-        <div className="mb-10">
-          <div className="text-gray-500 text-xs mb-2 uppercase tracking-widest">Average Score (Real-time)</div>
-          <div className="text-5xl font-black text-white drop-shadow-md">
-            {getAverageScore(currentItem.id)} <span className="text-xl text-gray-600 font-normal">/ 5.0</span>
+        {config.tanks.map(tank => {
+          const selectedTier = assignments[tank.id]
+            ? getTier(assignments[tank.id])
+            : null;
+          return (
+            <div
+              className={`tank-card ${selectedTier ? 'assigned' : ''}`}
+              key={tank.id}
+            >
+              <div className="tank-header">
+                {tank.imageUrl ? (
+                  <div
+                    className="tank-thumb"
+                    style={{ backgroundImage: `url('${tank.imageUrl}')` }}
+                  ></div>
+                ) : null}
+                <div className="tank-name">{tank.name}</div>
+                {selectedTier && (
+                  <div
+                    className="tank-assigned-label"
+                    style={{ background: selectedTier.color }}
+                  >
+                    {selectedTier.name}
+                  </div>
+                )}
+              </div>
+              <div className="tier-buttons">
+                {config.tiers.map(tier => (
+                  <button
+                    key={tier.id}
+                    className={`tier-btn ${assignments[tank.id] === tier.id ? 'selected' : ''}`}
+                    style={
+                      assignments[tank.id] === tier.id
+                        ? { background: tier.color }
+                        : {}
+                    }
+                    onClick={() => assign(tank.id, tier.id)}
+                  >
+                    {tier.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </main>
+
+      <div className="tier-submit-bar">
+        <span className="tier-progress" style={{ margin: 0 }}>
+          {allAssigned
+            ? '✓ ครบแล้ว พร้อมส่ง'
+            : `เหลืออีก ${totalTanks - assignedCount} คัน`}
+        </span>
+        <button
+          className="tier-submit-btn"
+          disabled={!allAssigned || submitting}
+          onClick={() => setConfirming(true)}
+        >
+          ส่งคำตอบ
+        </button>
+      </div>
+
+      {error && (
+        <div style={{
+          position: 'fixed', bottom: '5rem', left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(255, 61, 61, 0.15)', border: '1px solid #ff3d3d',
+          color: '#ff3d3d', padding: '0.8rem 1.5rem', zIndex: 300,
+          fontFamily: 'Sarabun, sans-serif', fontSize: '0.85rem'
+        }}>
+          {error}
+        </div>
+      )}
+
+      {/* CONFIRM MODAL */}
+      {confirming && (
+        <div className="modal-overlay" onClick={() => setConfirming(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="corner tl"></div>
+            <div className="corner tr"></div>
+            <div className="corner bl"></div>
+            <div className="corner br"></div>
+            <div className="modal-label">— CONFIRM YOUR RANKING —</div>
+            <div className="modal-warning" style={{ marginTop: '1rem' }}>
+              ส่งการจัดอันดับทั้งหมด {totalTanks} คัน?<br />
+              <strong style={{ color: '#ff3d3d' }}>ส่งแล้วแก้ไขไม่ได้</strong> — โหวตได้ครั้งเดียว
+            </div>
+            <div className="modal-buttons">
+              <button className="btn" onClick={() => setConfirming(false)}>
+                กลับไปแก้
+              </button>
+              <button
+                className="btn btn-confirm"
+                onClick={handleSubmit}
+                disabled={submitting}
+              >
+                {submitting ? '...' : 'ยืนยันส่ง'}
+              </button>
+            </div>
           </div>
         </div>
-
-        {/* ปุ่มเลือกอันดับ */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          {tierOptions.map((option) => (
-            <button
-              key={option.id}
-              onClick={() => handleVote(option.id)}
-              className="py-3 px-2 text-xs md:text-sm font-bold rounded transition-all duration-200 hover:brightness-110 active:scale-95"
-              style={{ 
-                backgroundColor: option.color, 
-                color: option.textColor,
-                border: `1px solid ${option.borderColor}`
-              }}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-
-      </div>
+      )}
     </div>
   );
 }

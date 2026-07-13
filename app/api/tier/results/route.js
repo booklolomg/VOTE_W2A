@@ -1,12 +1,25 @@
 import { NextResponse } from 'next/server';
-import { kv } from '@vercel/kv';
+import { kv } from '@/lib/kv';
+import { TIER_CONFIG } from '@/lib/tierConfig';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
+  const counts = {};
   try {
-    // สมมติว่าโครงสร้างข้อมูลใน KV ถูกเก็บไว้ที่ Key 'tier_results'
-    const results = await kv.get('tier_results') || {};
-    return NextResponse.json(results);
-  } catch (error) {
-    return NextResponse.json({ error: 'Failed to fetch results' }, { status: 500 });
+    await Promise.all(
+      TIER_CONFIG.tanks.map(async (tank) => {
+        counts[tank.id] = {};
+        await Promise.all(
+          TIER_CONFIG.tiers.map(async (tier) => {
+            const c = await kv.get(`tiercount:${tank.id}:${tier.id}`);
+            counts[tank.id][tier.id] = Number(c) || 0;
+          })
+        );
+      })
+    );
+  } catch (e) {
+    console.error('KV error:', e);
   }
+  return NextResponse.json({ counts });
 }
