@@ -17,20 +17,19 @@ export async function POST(request) {
     return NextResponse.json({ error: 'invalid tier' }, { status: 400 });
   }
 
-  // vote once
   const userKey = `tiervote:${session.id}`;
   const existing = await kv.get(userKey);
-  if (existing) {
-    return NextResponse.json(
-      { error: 'already voted', alreadyVoted: true, myVote: existing },
-      { status: 409 }
-    );
+
+  // ถ้าเคยโหวตไว้ ให้ลดคะแนนของ tier เก่าก่อน (เปลี่ยนใจ)
+  if (existing && existing !== tierId) {
+    await kv.decr(`tiercount:${existing}`);
+  }
+  if (existing !== tierId) {
+    await kv.incr(`tiercount:${tierId}`);
   }
 
   await kv.set(userKey, tierId);
-  await kv.incr(`tiercount:${tierId}`);
 
-  // return fresh counts
   const counts = {};
   await Promise.all(
     TIER_CONFIG.tiers.map(async (t) => {
@@ -40,4 +39,29 @@ export async function POST(request) {
   );
 
   return NextResponse.json({ ok: true, myVote: tierId, counts });
+}
+
+export async function DELETE(request) {
+  const session = getSessionFromRequest(request);
+  if (!session) {
+    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  }
+
+  const userKey = `tiervote:${session.id}`;
+  const existing = await kv.get(userKey);
+
+  if (existing) {
+    await kv.decr(`tiercount:${existing}`);
+    await kv.del(userKey);
+  }
+
+  const counts = {};
+  await Promise.all(
+    TIER_CONFIG.tiers.map(async (t) => {
+      const c = await kv.get(`tiercount:${t.id}`);
+      counts[t.id] = Number(c) || 0;
+    })
+  );
+
+  return NextResponse.json({ ok: true, myVote: null, counts });
 }

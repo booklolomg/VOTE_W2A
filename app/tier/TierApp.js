@@ -37,15 +37,26 @@ export default function TierApp({ config, initial }) {
         setMyVote(data.myVote);
         setCounts(data.counts);
         setPendingChoice(null);
-      } else if (data.alreadyVoted) {
-        setMyVote(data.myVote);
-        setPendingChoice(null);
-        setError('คุณโหวตไปแล้ว — โหวตได้ครั้งเดียว');
       } else {
         setError(data.error || 'เกิดข้อผิดพลาด');
       }
     } catch (e) {
       setError(e.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleReset() {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const r = await fetch('/api/tier/vote', { method: 'DELETE' });
+      const data = await r.json();
+      if (data.ok) {
+        setMyVote(null);
+        setCounts(data.counts);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -63,7 +74,6 @@ export default function TierApp({ config, initial }) {
     ? config.tiers.reduce((s, t) => s + t.score * (counts[t.id] || 0), 0) / total
     : 0;
 
-  // tier ที่ใกล้ค่าเฉลี่ยที่สุด
   let avgTier = null;
   if (total > 0) {
     avgTier = config.tiers.reduce((best, t) =>
@@ -173,13 +183,25 @@ export default function TierApp({ config, initial }) {
         <div className="tier-footer-note">
           {myVote
             ? `YOU VOTED "${votedTier?.name}" · UPDATES EVERY 3S`
-            : 'กดแถบ tier ที่ต้องการเพื่อโหวต · โหวตได้ครั้งเดียว'}
+            : 'กดแถบ tier ที่ต้องการเพื่อโหวต'}
         </div>
       </main>
 
+      {/* ===== FOOTER: เปลี่ยนใจ / รีเซ็ตโหวต (เหมือนหน้าซ้าย/ขวา) ===== */}
+      {myVote && (
+        <section className="footer-bar">
+          <div className="footer-text">
+            YOU VOTED <strong>{votedTier?.name}</strong> · TOTAL {total} VOTES
+          </div>
+          <button onClick={handleReset} className="reset-btn" disabled={submitting}>
+            เปลี่ยนใจ / รีเซ็ตโหวต
+          </button>
+        </section>
+      )}
+
       {error && (
         <div style={{
-          position: 'fixed', bottom: '2rem', left: '50%', transform: 'translateX(-50%)',
+          position: 'fixed', bottom: '5rem', left: '50%', transform: 'translateX(-50%)',
           background: 'rgba(255, 61, 61, 0.15)', border: '1px solid #ff3d3d',
           color: '#ff3d3d', padding: '0.8rem 1.5rem', zIndex: 300,
           fontFamily: 'Sarabun, sans-serif', fontSize: '0.85rem'
@@ -188,7 +210,7 @@ export default function TierApp({ config, initial }) {
         </div>
       )}
 
-      {/* CONFIRM MODAL */}
+      {/* CONFIRM MODAL — มีปุ่ม "ยกเลิก" เหมือนหน้าซ้าย/ขวา */}
       {pendingChoice && (
         <div className="modal-overlay" onClick={() => setPendingChoice(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -205,7 +227,7 @@ export default function TierApp({ config, initial }) {
             </div>
             <div className="modal-warning">
               คุณกำลังจะโหวต tier นี้<br />
-              <strong style={{ color: '#ff3d3d' }}>โหวตแล้วแก้ไขไม่ได้</strong> — โหวตได้ครั้งเดียว
+              <span className="muted">เปลี่ยนใจได้ภายหลังด้วยปุ่มรีเซ็ต</span>
             </div>
             <div className="modal-buttons">
               <button className="btn" onClick={() => setPendingChoice(null)}>
